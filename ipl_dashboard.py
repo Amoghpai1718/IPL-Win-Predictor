@@ -8,6 +8,51 @@ import plotly.express as px
 # --- Page Configuration ---
 st.set_page_config(page_title="IPL Deep Analytics Dashboard", layout="wide")
 
+# --- Function to add background image ---
+def add_bg_from_url():
+    """
+    Injects CSS to set a background image for the Streamlit app.
+    """
+    st.markdown(
+         f"""
+         <style>
+         .stApp {{
+             background-image: url("https://images.unsplash.com/photo-1607734834519-d8576ae60ea6?q=80&w=2070&auto=format&fit=crop&ixlib=rb-4.0.3&ixid=M3wxMjA3fDB8MHxwaG90by1wYWdlfHx8fGVufDB8fHx8fA%3D%3D");
+             background-attachment: fixed;
+             background-size: cover;
+             background-repeat: no-repeat;
+         }}
+         /* Add a semi-transparent overlay to improve text readability */
+         .stApp::before {{
+            content: "";
+            position: absolute;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background-color: rgba(0, 0, 0, 0.6);
+            z-index: -1;
+         }}
+
+         /* Ensure sidebar has a solid background */
+         [data-testid="stSidebar"] > div:first-child {{
+             background-color: #0f1116; /* A dark color that fits the theme */
+         }}
+
+         /* Style adjustment for expanders and containers to pop against the background */
+         [data-testid="stExpander"], [data-testid="stVerticalBlock"] .st-emotion-cache-16txtl3 {{
+             background-color: rgba(40, 40, 40, 0.8);
+             border-radius: 10px;
+         }}
+         </style>
+         """,
+         unsafe_allow_html=True
+     )
+
+# Call the function to set the background
+add_bg_from_url()
+
+
 # --- Helper function for player avatars ---
 def get_player_avatar(player_name):
     """Generates a placeholder avatar URL with player initials."""
