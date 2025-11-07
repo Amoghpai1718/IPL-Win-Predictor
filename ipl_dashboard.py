@@ -4,6 +4,10 @@ import numpy as np
 import joblib
 import os
 import plotly.express as px
+import requests
+from dotenv import load_dotenv
+import google.generativeai as genai
+from googleapiclient.discovery import build
 
 # --- Page Configuration ---
 st.set_page_config(page_title="IPL Deep Analytics Dashboard", layout="wide")
@@ -17,7 +21,6 @@ def get_player_avatar(player_name):
 # --- Caching Functions for Performance ---
 @st.cache_data
 def load_and_process_data():
-    """Loads pre-cleaned CSV data and engineers features."""
     if not os.path.exists('all_matches.csv') or not os.path.exists('all_deliveries.csv'):
         st.error("Error: The clean data files ('all_matches.csv', 'all_deliveries.csv') are missing.")
         return None, None
@@ -28,7 +31,6 @@ def load_and_process_data():
     all_matches_df['date'] = pd.to_datetime(all_matches_df['date'])
     all_matches_df = all_matches_df.sort_values('date')
 
-    # --- Feature Engineering ---
     team_matches = pd.concat(
         [
             all_matches_df[['date', 'team1', 'winner']].rename(columns={'team1': 'team'}),
@@ -55,10 +57,9 @@ def load_and_process_data():
 
 @st.cache_resource
 def load_model_and_encoders():
-    """Loads the trained model and encoders from disk."""
     required_files = ['ipl_winner_model.pkl', 'team_encoder.pkl', 'venue_encoder.pkl', 'toss_decision_encoder.pkl']
     for f in required_files:
-        if not os.path.exists(f): 
+        if not os.path.exists(f):
             st.error(f"Error: The model file '{f}' is missing. Please upload it to the repository.")
             st.stop()
     return (
@@ -68,14 +69,14 @@ def load_model_and_encoders():
         joblib.load('toss_decision_encoder.pkl')
     )
 
-# --- Main App Logic ---
+# --- Load data & model ---
 all_matches_df, all_deliveries_df = load_and_process_data()
 model, team_encoder, venue_encoder, toss_decision_encoder = load_model_and_encoders()
 
 st.title("IPL Deep Analytics & Match Predictor")
 st.markdown("A professional analytics platform providing insights and predictions based on historical IPL data.")
 
-if all_matches_df is None or model is None: 
+if all_matches_df is None or model is None:
     st.stop()
 
 # --- Sidebar Inputs ---
@@ -108,33 +109,8 @@ if st.sidebar.button("Predict & Analyze", type="primary"):
             c2.metric(f"{team1} Wins", team1_wins)
             c3.metric(f"{team2} Wins", team2_wins)
             c4.metric("Toss Winner Wins (%)", f"{toss_winner_wins / total_matches:.1%}")
-            
-            t1_venue_stats = all_matches_df[(all_matches_df['venue'] == venue) & ((all_matches_df['team1'] == team1) | (all_matches_df['team2'] == team1))]
-            t2_venue_stats = all_matches_df[(all_matches_df['venue'] == venue) & ((all_matches_df['team1'] == team2) | (all_matches_df['team2'] == team2))]
-            
-            c1, c2 = st.columns(2)
-            with c1:
-                st.metric(f"{team1} Win % at {venue}", f"{(t1_venue_stats['winner'] == team1).sum() / len(t1_venue_stats):.1%}" if len(t1_venue_stats)>0 else "N/A", f"{len(t1_venue_stats)} matches")
-            with c2:
-                st.metric(f"{team2} Win % at {venue}", f"{(t2_venue_stats['winner'] == team2).sum() / len(t2_venue_stats):.1%}" if len(t2_venue_stats)>0 else "N/A", f"{len(t2_venue_stats)} matches")
-
-        with st.expander("Recent Performance and Score Trends", expanded=True):
-            def get_recent_performance(team_name):
-                team_matches = all_matches_df[(all_matches_df['team1'] == team_name) | (all_matches_df['team2'] == team_name)].sort_values('date', ascending=False).head(5)
-                if team_matches.empty: 
-                    return "N/A", "N/A"
-                match_ids = team_matches['match_id'].tolist()
-                team_deliveries = all_deliveries_df[(all_deliveries_df['match_id'].isin(match_ids)) & (all_deliveries_df['inning_team'] == team_name)]
-                avg_runs = team_deliveries.groupby('match_id')['runs_scored'].sum().mean()
-                avg_wickets = team_deliveries.groupby('match_id')['is_wicket'].sum().mean()
-                return f"{avg_runs:.0f}", f"{avg_wickets:.0f}"
-            
-            t1_score, t1_wickets = get_recent_performance(team1)
-            t2_score, t2_wickets = get_recent_performance(team2)
-            
-            c1, c2 = st.columns(2)
-            c1.metric(f"Avg. Score - {team1}", t1_score, f"Avg. Wickets Lost: {t1_wickets}")
-            c2.metric(f"Avg. Score - {team2}", t2_score, f"Avg. Wickets Lost: {t2_wickets}")
+    else:
+        st.info("No head-to-head data available for the selected teams.")
 
     st.markdown("---")
     st.header("Match Winner Prediction")
@@ -164,35 +140,40 @@ else:
     st.info("Use the sidebar to configure the match details and click 'Predict & Analyze'.")
 
 # --- Gemini + Google Search Chatbot Integration ---
-import google.generativeai as genai
-from googleapiclient.discovery import build
-from dotenv import load_dotenv
-
 load_dotenv()
 genai.configure(api_key=os.getenv("GOOGLE_API_KEY"))
 
 def google_search(query):
-    service = build("customsearch", "v1", developerKey=os.getenv("GOOGLE_SEARCH_KEY"))
-    res = service.cse().list(q=query, cx=os.getenv("GOOGLE_SEARCH_CX")).execute()
-    if "items" in res:
-        return [item["snippet"] for item in res["items"][:3]]
-    return ["No recent info found."]
+    try:
+        service = build("customsearch", "v1", developerKey=os.getenv("GOOGLE_SEARCH_KEY"))
+        res = service.cse().list(
+            q=f"{query} IPL 2025 site:news.google.com",
+            cx=os.getenv("GOOGLE_SEARCH_CX")
+        ).execute()
+        if "items" in res:
+            return [item["snippet"] for item in res["items"][:3]]
+        else:
+            return ["No recent info found."]
+    except Exception as e:
+        return [f"Search error: {e}"]
 
 st.markdown("---")
-st.header("💬 Chat with IPL Bot")
+st.header("💬 Chat with IPL Bot (Live Info + Gemini AI)")
 
-user_query = st.text_input("Ask anything about IPL (e.g., 'Who is the RCB captain now?')")
+user_query = st.text_input("Ask anything about IPL 2025 (e.g., 'Who is the RCB captain now?')")
 
 if user_query:
-    with st.spinner("Fetching live info..."):
+    with st.spinner("Fetching latest IPL 2025 updates..."):
         try:
             search_snippets = google_search(user_query)
             context = " ".join(search_snippets)
             model = genai.GenerativeModel(model_name="models/gemini-2.0-flash")
-            response = model.generate_content(f"Use this latest IPL info: {context}\n\nQuestion: {user_query}")
+            prompt = f"Using the latest IPL 2025 info: {context}\n\nQuestion: {user_query}"
+            response = model.generate_content(prompt)
             st.success(response.text)
         except Exception as e:
             st.error(f"Error: {e}")
+
 
 
 
