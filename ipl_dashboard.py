@@ -218,3 +218,29 @@ if st.sidebar.button("Predict & Analyze", type="primary"):
         st.plotly_chart(fig, use_container_width=True)
 else:
     st.info("Use the sidebar to configure the match details and click 'Predict & Analyze' to generate the full report.")
+
+
+# --- Gemini IPL Chatbot Integration ---
+import google.generativeai as genai
+import os
+from dotenv import load_dotenv
+
+# Load API Key
+load_dotenv()
+genai.configure(api_key=os.getenv("GOOGLE_API_KEY"))
+
+st.markdown("---")
+st.header("💬 Chat with IPL Bot")
+
+# Input box
+user_query = st.text_input("Ask anything about IPL (e.g., 'Who won IPL 2016?', 'Who is the RCB captain now?')")
+
+if user_query:
+    with st.spinner("Fetching response..."):
+        try:
+            model = genai.GenerativeModel(model_name="models/gemini-2.0-flash")
+            response = model.generate_content(f"You are an IPL expert. Answer accurately: {user_query}")
+            st.success(response.text)
+        except Exception as e:
+            st.error(f"Gemini Error: {e}")
+
