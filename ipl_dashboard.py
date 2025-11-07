@@ -140,40 +140,106 @@ else:
     st.info("Use the sidebar to configure the match details and click 'Predict & Analyze'.")
 
 # --- Gemini + Google Search Chatbot Integration ---
+# --- Gemini + Google Search Chatbot Integration (improved) ---
+import google.generativeai as genai
+from googleapiclient.discovery import build
+from dotenv import load_dotenv
+import re
+from urllib.parse import urlparse
+
 load_dotenv()
 genai.configure(api_key=os.getenv("GOOGLE_API_KEY"))
 
-def google_search(query):
+def google_search_items(query, num=5):
+    """Return top search items with title, link, snippet."""
     try:
         service = build("customsearch", "v1", developerKey=os.getenv("GOOGLE_SEARCH_KEY"))
-        res = service.cse().list(
-            q=f"{query} IPL 2025 site:news.google.com",
-            cx=os.getenv("GOOGLE_SEARCH_CX")
-        ).execute()
-        if "items" in res:
-            return [item["snippet"] for item in res["items"][:3]]
-        else:
-            return ["No recent info found."]
+        res = service.cse().list(q=query, cx=os.getenv("GOOGLE_SEARCH_CX"), num=num).execute()
+        items = res.get("items", [])
+        results = []
+        for it in items:
+            results.append({
+                "title": it.get("title", ""),
+                "link": it.get("link", ""),
+                "snippet": it.get("snippet", "")
+            })
+        return results
     except Exception as e:
-        return [f"Search error: {e}"]
+        return [{"title": "search_error", "link": "", "snippet": f"Search error: {e}"}]
+
+def explicit_fact_from_items(items, keywords=("captain", "skipper")):
+    """Look for an explicit mention like 'X is the captain' in title/snippet.
+       Returns (fact_text, source_link) or (None, None)."""
+    pattern = re.compile(r"([A-Z][a-z]+(?:\s[A-Z][a-z]+)*)\s+(?:is|named|appointed|announced|confirmed|captain|skipper)", re.IGNORECASE)
+    for it in items:
+        text = " ".join([it.get("title",""), it.get("snippet","")])
+        # direct mentions of "captain" or "skipper" with a name
+        if any(k in text.lower() for k in keywords):
+            # try to extract "Name is the captain" pattern
+            m = re.search(r"([A-Z][a-z]+(?:\s[A-Z][a-z]+)*)\s+(?:is|named|appointed|confirmed).{0,30}captain|captain\s+([A-Z][a-z]+(?:\s[A-Z][a-z]+)*)", text)
+            if m:
+                name = (m.group(1) or m.group(2)).strip() if m.groups() else None
+                if name:
+                    return (f"{name} (from snippet: {it.get('snippet','')})", it.get("link"))
+            # fallback: return full snippet and link if it mentions "captain"
+            return (it.get("snippet",""), it.get("link"))
+    return (None, None)
+
+def format_sources(items, max_items=3):
+    out = []
+    for i, it in enumerate(items[:max_items], start=1):
+        link = it.get("link","")
+        domain = urlparse(link).netloc
+        out.append(f"{i}. {it.get('title','')}\n{it.get('snippet','')}\n{domain} — {link}")
+    return "\n\n".join(out)
 
 st.markdown("---")
-st.header("💬 Chat with IPL Bot (Live Info + Gemini AI)")
+st.header("💬 Chat with IPL Bot (Live + Cited)")
 
-user_query = st.text_input("Ask anything about IPL 2025 (e.g., 'Who is the RCB captain now?')")
+user_query = st.text_input("Ask anything about IPL (e.g., 'Who is the RCB captain now?')")
 
 if user_query:
-    with st.spinner("Fetching latest IPL 2025 updates..."):
+    with st.spinner("Fetching live info and verifying..."):
         try:
-            search_snippets = google_search(user_query)
-            context = " ".join(search_snippets)
-            model = genai.GenerativeModel(model_name="models/gemini-2.0-flash")
-            prompt = f"Using the latest IPL 2025 info: {context}\n\nQuestion: {user_query}"
-            response = model.generate_content(prompt)
-            st.success(response.text)
+            # 1) Try targeted search queries for authoritative sources first
+            q_variants = [
+                f"{user_query} RCB captain site:espncricinfo.com",
+                f"{user_query} RCB captain site:timesofindia.indiatimes.com",
+                f"{user_query} RCB captain site:thehindu.com",
+                f"{user_query} RCB captain site:royalchallengers.com",
+                f"{user_query} RCB captain"
+            ]
+            items = []
+            for q in q_variants:
+                items = google_search_items(q, num=5)
+                # if we got results, stop early
+                if items and not items[0].get("snippet","").startswith("Search error"):
+                    break
+
+            if not items:
+                st.error("No search results. Check your GOOGLE_SEARCH_KEY and GOOGLE_SEARCH_CX.")
+            else:
+                # 2) Look for an explicit fact
+                fact, source = explicit_fact_from_items(items)
+                if fact:
+                    st.success(f"Answer (from web): {fact}\n\nSource: {source}")
+                    st.subheader("Source excerpts")
+                    st.text(format_sources(items, max_items=3))
+                else:
+                    # 3) Give the model the top snippets and ask for a concise answer + cite
+                    context = format_sources(items, max_items=5)
+                    prompt = (
+                        "You are a fact-focused assistant. Use ONLY the sources below to answer the question. "
+                        "If the sources disagree, say so and list which source says what. "
+                        "Cite the source URLs in your final short answer (one sentence answer + sources). "
+                        f"SOURCES:\n{context}\n\nQUESTION: {user_query}\n\nAnswer concisely and include citation links."
+                    )
+
+                    # Use a currently available model name on your machine (confirm with list_gemini_models)
+                    response = genai.GenerativeModel(model_name="models/gemini-2.5-flash").generate_content(prompt)
+                    # Show model's answer and the source excerpts
+                    st.success(response.text)
+                    st.subheader("Source excerpts used for context")
+                    st.text(context)
         except Exception as e:
-            st.error(f"Error: {e}")
-
-
-
-
+            st.error(f"Error while fetching/answering: {e}")
