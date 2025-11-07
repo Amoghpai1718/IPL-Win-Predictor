@@ -4,3 +4,4 @@ scikit-learn
 xgboost
 plotly
 google-generativeai
+python-dotenv
