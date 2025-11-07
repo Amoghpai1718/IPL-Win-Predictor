@@ -1,5 +1,9 @@
 streamlit
 pandas
+numpy
 scikit-learn
 xgboost
 plotly
+joblib
+python-dotenv
+google-generativeai
