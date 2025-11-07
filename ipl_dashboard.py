@@ -4,57 +4,62 @@ import numpy as np
 import joblib
 import os
 import plotly.express as px
-import requests
-from dotenv import load_dotenv
-import google.generativeai as genai
 
 # --- Page Configuration ---
 st.set_page_config(page_title="IPL Deep Analytics Dashboard", layout="wide")
 
 # --- Helper function for player avatars ---
 def get_player_avatar(player_name):
+    """Generates a placeholder avatar URL with player initials."""
     initials = "".join([name[0] for name in player_name.split()]).upper()
     return f"https://placehold.co/100x100/222/FFF/png?text={initials}"
 
 # --- Caching Functions for Performance ---
 @st.cache_data
 def load_and_process_data():
+    """Loads pre-cleaned CSV data and engineers features."""
     if not os.path.exists('all_matches.csv') or not os.path.exists('all_deliveries.csv'):
-        st.error("Error: Data files missing.")
+        st.error("Error: The clean data files ('all_matches.csv', 'all_deliveries.csv') are missing.")
         return None, None
-
+        
     all_matches_df = pd.read_csv('all_matches.csv')
     all_deliveries_df = pd.read_csv('all_deliveries.csv')
+    
     all_matches_df['date'] = pd.to_datetime(all_matches_df['date'])
     all_matches_df = all_matches_df.sort_values('date')
 
-    team_matches = pd.concat([
-        all_matches_df[['date', 'team1', 'winner']].rename(columns={'team1': 'team'}),
-        all_matches_df[['date', 'team2', 'winner']].rename(columns={'team2': 'team'})
-    ], ignore_index=True).sort_values(['team', 'date'])
+    # --- Feature Engineering ---
+    team_matches = pd.concat(
+        [
+            all_matches_df[['date', 'team1', 'winner']].rename(columns={'team1': 'team'}),
+            all_matches_df[['date', 'team2', 'winner']].rename(columns={'team2': 'team'})
+        ],
+        ignore_index=True
+    ).sort_values(['team', 'date'])
     
     team_matches['is_win'] = (team_matches['team'] == team_matches['winner']).astype(int)
     team_matches['form_win_pct'] = team_matches.groupby('team')['is_win'].rolling(5, min_periods=1).mean().reset_index(level=0, drop=True)
     team_matches['form_win_pct_prior'] = team_matches.groupby('team')['form_win_pct'].shift(1).fillna(0)
-
+    
     all_matches_df = pd.merge(
         all_matches_df, team_matches[['date', 'team', 'form_win_pct_prior']],
         left_on=['date', 'team1'], right_on=['date', 'team'], how='left'
     ).rename(columns={'form_win_pct_prior': 'team1_form'})
-
+    
     all_matches_df = pd.merge(
         all_matches_df, team_matches[['date', 'team', 'form_win_pct_prior']],
         left_on=['date', 'team2'], right_on=['date', 'team'], how='left'
     ).rename(columns={'form_win_pct_prior': 'team2_form'})
-
+    
     return all_matches_df.drop(columns=['team_x', 'team_y']), all_deliveries_df
 
 @st.cache_resource
 def load_model_and_encoders():
+    """Loads the trained model and encoders from disk."""
     required_files = ['ipl_winner_model.pkl', 'team_encoder.pkl', 'venue_encoder.pkl', 'toss_decision_encoder.pkl']
     for f in required_files:
-        if not os.path.exists(f):
-            st.error(f"Missing model file: {f}")
+        if not os.path.exists(f): 
+            st.error(f"Error: The model file '{f}' is missing. Please upload it to the repository.")
             st.stop()
     return (
         joblib.load('ipl_winner_model.pkl'),
@@ -63,14 +68,14 @@ def load_model_and_encoders():
         joblib.load('toss_decision_encoder.pkl')
     )
 
-# --- Load data & model ---
+# --- Main App Logic ---
 all_matches_df, all_deliveries_df = load_and_process_data()
 model, team_encoder, venue_encoder, toss_decision_encoder = load_model_and_encoders()
 
 st.title("IPL Deep Analytics & Match Predictor")
 st.markdown("A professional analytics platform providing insights and predictions based on historical IPL data.")
 
-if all_matches_df is None or model is None:
+if all_matches_df is None or model is None: 
     st.stop()
 
 # --- Sidebar Inputs ---
@@ -86,12 +91,11 @@ toss_decision = st.sidebar.radio("Toss Decision", ("field", "bat"))
 team1_form = st.sidebar.slider(f"{team1} Form (Win %)", 0.0, 1.0, 0.6, 0.2)
 team2_form = st.sidebar.slider(f"{team2} Form (Win %)", 0.0, 1.0, 0.4, 0.2)
 
-# --- Prediction Button ---
 if st.sidebar.button("Predict & Analyze", type="primary"):
     st.header(f"Match Analysis: {team1} vs {team2}")
     
     h2h_matches_df = all_matches_df[((all_matches_df['team1'] == team1) & (all_matches_df['team2'] == team2)) | ((all_matches_df['team1'] == team2) & (all_matches_df['team2'] == team1))].copy()
-
+    
     if not h2h_matches_df.empty:
         with st.expander("Head-to-Head, Venue, and Toss Insights", expanded=True):
             total_matches = len(h2h_matches_df)
@@ -104,8 +108,33 @@ if st.sidebar.button("Predict & Analyze", type="primary"):
             c2.metric(f"{team1} Wins", team1_wins)
             c3.metric(f"{team2} Wins", team2_wins)
             c4.metric("Toss Winner Wins (%)", f"{toss_winner_wins / total_matches:.1%}")
-    else:
-        st.info("No head-to-head data available for the selected teams.")
+            
+            t1_venue_stats = all_matches_df[(all_matches_df['venue'] == venue) & ((all_matches_df['team1'] == team1) | (all_matches_df['team2'] == team1))]
+            t2_venue_stats = all_matches_df[(all_matches_df['venue'] == venue) & ((all_matches_df['team1'] == team2) | (all_matches_df['team2'] == team2))]
+            
+            c1, c2 = st.columns(2)
+            with c1:
+                st.metric(f"{team1} Win % at {venue}", f"{(t1_venue_stats['winner'] == team1).sum() / len(t1_venue_stats):.1%}" if len(t1_venue_stats)>0 else "N/A", f"{len(t1_venue_stats)} matches")
+            with c2:
+                st.metric(f"{team2} Win % at {venue}", f"{(t2_venue_stats['winner'] == team2).sum() / len(t2_venue_stats):.1%}" if len(t2_venue_stats)>0 else "N/A", f"{len(t2_venue_stats)} matches")
+
+        with st.expander("Recent Performance and Score Trends", expanded=True):
+            def get_recent_performance(team_name):
+                team_matches = all_matches_df[(all_matches_df['team1'] == team_name) | (all_matches_df['team2'] == team_name)].sort_values('date', ascending=False).head(5)
+                if team_matches.empty: 
+                    return "N/A", "N/A"
+                match_ids = team_matches['match_id'].tolist()
+                team_deliveries = all_deliveries_df[(all_deliveries_df['match_id'].isin(match_ids)) & (all_deliveries_df['inning_team'] == team_name)]
+                avg_runs = team_deliveries.groupby('match_id')['runs_scored'].sum().mean()
+                avg_wickets = team_deliveries.groupby('match_id')['is_wicket'].sum().mean()
+                return f"{avg_runs:.0f}", f"{avg_wickets:.0f}"
+            
+            t1_score, t1_wickets = get_recent_performance(team1)
+            t2_score, t2_wickets = get_recent_performance(team2)
+            
+            c1, c2 = st.columns(2)
+            c1.metric(f"Avg. Score - {team1}", t1_score, f"Avg. Wickets Lost: {t1_wickets}")
+            c2.metric(f"Avg. Score - {team2}", t2_score, f"Avg. Wickets Lost: {t2_wickets}")
 
     st.markdown("---")
     st.header("Match Winner Prediction")
@@ -124,53 +153,46 @@ if st.sidebar.button("Predict & Analyze", type="primary"):
     c1, c2 = st.columns([0.6, 0.4])
     with c1:
         st.subheader("Prediction Summary")
-        st.info(f"The model predicts **{winner}** as the winner.")
+        st.info(f"The model predicts **{winner}** as the likely winner based on data trends.")
     with c2:
         st.subheader("Win Probability")
         prob_df = pd.DataFrame({'Team': [team1, team2], 'Probability': [probabilities[1] * 100, probabilities[0] * 100]})
         fig = px.pie(prob_df, values='Probability', names='Team', hole=0.4)
+        fig.update_traces(textinfo='percent+label')
         st.plotly_chart(fig, use_container_width=True)
 else:
-    st.info("Use the sidebar to configure the match and click 'Predict & Analyze'.")
+    st.info("Use the sidebar to configure the match details and click 'Predict & Analyze'.")
 
-# --- Gemini IPL Chatbot Integration ---
-st.markdown("---")
-st.header("💬 Chat with IPL Bot")
+# --- Gemini + Google Search Chatbot Integration ---
+import google.generativeai as genai
+from googleapiclient.discovery import build
+from dotenv import load_dotenv
 
-# Load API keys
 load_dotenv()
 genai.configure(api_key=os.getenv("GOOGLE_API_KEY"))
 
-# --- Function: Google Search Integration ---
-def fetch_from_google(query):
-    api_key = os.getenv("GOOGLE_SEARCH_KEY")
-    cx = os.getenv("GOOGLE_SEARCH_CX")
-    url = f"https://www.googleapis.com/customsearch/v1?q={query}&key={api_key}&cx={cx}"
-    try:
-        res = requests.get(url)
-        data = res.json()
-        if "items" in data:
-            return data["items"][0]["snippet"]
-        else:
-            return None
-    except Exception:
-        return None
+def google_search(query):
+    service = build("customsearch", "v1", developerKey=os.getenv("GOOGLE_SEARCH_KEY"))
+    res = service.cse().list(q=query, cx=os.getenv("GOOGLE_SEARCH_CX")).execute()
+    if "items" in res:
+        return [item["snippet"] for item in res["items"][:3]]
+    return ["No recent info found."]
 
-# --- Chat Interface ---
-user_query = st.text_input("Ask anything about IPL (e.g., 'Who is the RCB captain in 2025?')")
+st.markdown("---")
+st.header("💬 Chat with IPL Bot")
+
+user_query = st.text_input("Ask anything about IPL (e.g., 'Who is the RCB captain now?')")
 
 if user_query:
-    with st.spinner("Fetching live IPL insights..."):
-        search_data = fetch_from_google(user_query)
-        if search_data:
-            prompt = f"User asked: {user_query}\n\nLatest info from Google:\n{search_data}\n\nGive a clear, concise IPL answer."
-        else:
-            prompt = user_query
+    with st.spinner("Fetching live info..."):
         try:
-            model = genai.GenerativeModel("gemini-2.0-flash")
-            response = model.generate_content(prompt)
+            search_snippets = google_search(user_query)
+            context = " ".join(search_snippets)
+            model = genai.GenerativeModel(model_name="models/gemini-2.0-flash")
+            response = model.generate_content(f"Use this latest IPL info: {context}\n\nQuestion: {user_query}")
             st.success(response.text)
         except Exception as e:
-            st.error(f"⚠️ Gemini Error: {e}")
+            st.error(f"Error: {e}")
+
 
 
