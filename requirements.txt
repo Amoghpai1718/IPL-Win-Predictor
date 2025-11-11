@@ -4,3 +4,4 @@ scikit-learn==1.7.2
 xgboost==3.1.1
 plotly
 google-generativeai
+matplotlib
